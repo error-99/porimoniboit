@@ -1,0 +1,17 @@
+{
+  "bonus_limit": 5,
+  "channels": [
+    {
+      "chat_id": "-1004276015007",
+      "name": "Virul Video Pompom",
+      "url": "https://t.me/bdx71vid",
+      "type": "channel"
+    },
+    {
+      "chat_id": "-1004461751573",
+      "name": "Virul Video Pompom (Invite)",
+      "url": "https://t.me/+kf6uaT0CwuE3NGM1",
+      "type": "channel"
+    }
+  ]
+}
