@@ -213,11 +213,13 @@ async def on_get_video(msg: Message):
         if remaining is not None:
             want = min(want, remaining)      # an album never goes past the daily limit
 
-        history_raw = (user or {}).get("views", {}).get("history", []) or []
-        seen = {h.get("video_id") if isinstance(h, dict) else h for h in history_raw}
-        seen |= set((user or {}).get("views", {}).get("deleted_ids", []) or [])
-        seen.discard(None)
-        exclude = seen | picker.bad_ids()
+        def seen_videos() -> set:
+            views = (user or {}).get("views", {})
+            seen = {h.get("video_id") if isinstance(h, dict) else h
+                    for h in (views.get("history", []) or [])}
+            seen |= set(views.get("deleted_ids", []) or [])   # permanent "already sent" list
+            seen.discard(None)
+            return seen
 
         stats = (user or {}).get("stats", {})
 
@@ -227,35 +229,50 @@ async def on_get_video(msg: Message):
                           left=left, today=stats.get("today", 0) + n,
                           total=stats.get("total", 0) + n)[:1000] or None
 
-        extra_ids = []      # text messages sent next to the videos (deleted with them later)
-        if st["send_method"] == "forward":
-            # forward the ORIGINAL videos from the channel — same quality, same playback
-            sent, tries = await _forward_collect(msg.bot, chat, exclude, want, st)
-            caption = make_caption(len(sent)) if sent else None
-            if caption:     # a forward cannot carry new text, so it follows as its own message
-                try:
-                    extra_ids.append((await msg.bot.send_message(chat, caption)).message_id)
-                except Exception as e:
-                    logging.warning(f"caption send failed: {e}")
-        else:
-            # album: re-send by file_id so Telegram can group them into one album
-            ready, tries = [], 0
-            while len(ready) < want and tries < want + MAX_REPLACEMENTS:
-                cands = picker.pick_videos(exclude, want - len(ready), st)
-                if not cands:
-                    break
-                for v in cands:
-                    exclude.add(int(v["message_id"]))
-                    tries += 1
+        async def deliver(exclude: set):
+            extra_ids = []      # text messages sent next to the videos (deleted with them later)
+            if st["send_method"] == "forward":
+                # forward the ORIGINAL videos from the channel — same quality, same playback
+                sent, tries = await _forward_collect(msg.bot, chat, exclude, want, st)
+                caption = make_caption(len(sent)) if sent else None
+                if caption:     # a forward cannot carry new text, so it follows as its own message
                     try:
-                        kind, fid = await picker.resolve(msg.bot, v)
-                        ready.append((v, kind, fid))
-                    except picker.VideoGone as e:
-                        picker.mark_bad(v, str(e))
-                        logging.warning(f"Video {v.get('message_id')} is gone from channel — skipped")
+                        extra_ids.append((await msg.bot.send_message(chat, caption)).message_id)
                     except Exception as e:
-                        logging.warning(f"Could not load video {v.get('message_id')}: {e}")
-            sent = await _send_batch(msg.bot, chat, ready, make_caption(len(ready))) if ready else []
+                        logging.warning(f"caption send failed: {e}")
+            else:
+                # album: re-send by file_id so Telegram can group them into one album
+                ready, tries = [], 0
+                while len(ready) < want and tries < want + MAX_REPLACEMENTS:
+                    cands = picker.pick_videos(exclude, want - len(ready), st)
+                    if not cands:
+                        break
+                    for v in cands:
+                        exclude.add(int(v["message_id"]))
+                        tries += 1
+                        try:
+                            kind, fid = await picker.resolve(msg.bot, v)
+                            ready.append((v, kind, fid))
+                        except picker.VideoGone as e:
+                            picker.mark_bad(v, str(e))
+                            logging.warning(f"Video {v.get('message_id')} is gone from channel — skipped")
+                        except Exception as e:
+                            logging.warning(f"Could not load video {v.get('message_id')}: {e}")
+                sent = await _send_batch(msg.bot, chat, ready, make_caption(len(ready))) if ready else []
+            return sent, tries, extra_ids
+
+        seen = seen_videos()
+        bad = picker.bad_ids()
+        sent, tries, extra_ids = await deliver(seen | bad)
+
+        # the user has watched everything -> start their list over
+        if not sent and tries == 0 and user and seen and picker.pick_videos(set(bad), 1, st):
+            old_hist = (user.get("views", {}).get("history", []) or [])
+            fresh = [{**h, "video_id": None} for h in old_hist if isinstance(h, dict)]
+            users_col.update_one({"_id": uid}, {"$set": {"views.deleted_ids": [], "views.history": fresh}})
+            user.setdefault("views", {}).update(deleted_ids=[], history=fresh)
+            await msg.bot.send_message(chat, "🔄 <b>আপনি সব ভিডিও দেখে ফেলেছেন!</b>\nনতুন করে শুরু হচ্ছে…")
+            sent, tries, extra_ids = await deliver(set(bad))
 
         if not sent:
             text = ("📭 <b>সব ভিডিও দেখা হয়ে গেছে!</b>" if tries == 0
@@ -274,6 +291,7 @@ async def on_get_video(msg: Message):
                         {"video_id": int(it[0]["message_id"]), "sent_message_id": m.message_id,
                          "at": now_utc()} for it, m in sent] + [
                         {"video_id": None, "sent_message_id": i, "at": now_utc()} for i in extra_ids]}},
+                    "$addToSet": {"views.deleted_ids": {"$each": [int(it[0]["message_id"]) for it, _ in sent]}},
                     "$inc": {"stats.today": len(sent), "stats.total": len(sent)},
                 })
 
