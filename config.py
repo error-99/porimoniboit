@@ -1,11 +1,14 @@
 """Secrets and connection settings. Everything comes from .env — no defaults here."""
 import os
+import re
 from pathlib import Path
 from urllib.parse import quote_plus
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent / ".env")
+    # override=True: the .env file wins over stale BOT_TOKEN / MONGO_* variables that may
+    # still be set in the hosting panel or shell (a common cause of "I changed it but nothing changed")
+    load_dotenv(Path(__file__).parent / ".env", override=True)
 except ImportError:
     pass
 
@@ -17,7 +20,12 @@ def _req(name: str) -> str:
     return v
 
 
-BOT_TOKEN = _req("BOT_TOKEN")
+BOT_TOKEN = _req("BOT_TOKEN").strip().strip("\"'").strip()
+if not re.fullmatch(r"\d{6,}:[A-Za-z0-9_-]{30,}", BOT_TOKEN):
+    raise RuntimeError(
+        "BOT_TOKEN in .env does not look like a Telegram token (expected 123456789:AAAA...). "
+        "Check for extra spaces, quotes or a half-copied value.")
+BOT_ID = int(BOT_TOKEN.split(":", 1)[0])
 ADMIN_ID = int(_req("ADMIN_ID"))
 
 if os.getenv("MONGO_URI"):

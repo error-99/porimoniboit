@@ -14,8 +14,9 @@ WAVE = 25          # parallel sends per wave (Telegram allows ~30 msgs/sec)
 REFRESH = 1.5      # seconds between progress writes
 
 
-async def heartbeat():
-    while True:
+async def heartbeat(is_alive=lambda: True):
+    """Panel "online" ping. Stops when the bot can no longer talk to Telegram."""
+    while is_alive():
         try:
             settings_col.update_one({"_id": "heartbeat"}, {"$set": {"at": now_utc()}}, upsert=True)
         except Exception:
