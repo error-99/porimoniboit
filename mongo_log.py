@@ -6,6 +6,10 @@ import time
 import traceback
 from datetime import datetime, timezone
 
+import os
+import socket
+
+from config import BOT_ID
 from db import errors_col
 
 _DEDUPE_SECONDS = 60
@@ -38,7 +42,8 @@ class MongoErrorHandler(logging.Handler):
             self._seen[key] = now
             if len(self._seen) > 500:
                 self._seen = {k: v for k, v in self._seen.items() if now - v < _DEDUPE_SECONDS}
-            doc = {"at": datetime.now(timezone.utc), "level": record.levelname, "msg": msg}
+            doc = {"at": datetime.now(timezone.utc), "level": record.levelname, "msg": msg,
+                   "host": socket.gethostname(), "pid": os.getpid(), "bot_id": BOT_ID}
             if record.exc_info:
                 doc["trace"] = "".join(traceback.format_exception(*record.exc_info))[-2500:]
             self._q.put_nowait(doc)

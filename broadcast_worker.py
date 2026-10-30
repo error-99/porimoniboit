@@ -2,12 +2,15 @@
 can show whether the bot is online."""
 import asyncio
 import logging
+import os
+import socket
 import time
 
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from db import users_col, broadcasts_col, settings_col
+from config import BOT_ID
 from helpers import now_utc
 
 WAVE = 25          # parallel sends per wave (Telegram allows ~30 msgs/sec)
@@ -18,7 +21,9 @@ async def heartbeat(is_alive=lambda: True):
     """Panel "online" ping. Stops when the bot can no longer talk to Telegram."""
     while is_alive():
         try:
-            settings_col.update_one({"_id": "heartbeat"}, {"$set": {"at": now_utc()}}, upsert=True)
+            settings_col.update_one({"_id": "heartbeat_v2"}, {"$set": {
+                "at": now_utc(), "bot_id": BOT_ID, "host": socket.gethostname(), "pid": os.getpid()}},
+                upsert=True)
         except Exception:
             pass
         await asyncio.sleep(20)
@@ -89,7 +94,7 @@ async def broadcast_worker(bot):
     while True:
         try:
             job = broadcasts_col.find_one_and_update(
-                {"status": "pending"}, {"$set": {"status": "running", "started_at": now_utc()}},
+                {"status": "queued"}, {"$set": {"status": "running", "started_at": now_utc()}},
                 sort=[("created_at", 1)])
             if job:
                 await _run(bot, job)
