@@ -34,21 +34,46 @@ def init_db():
     broadcasts_col.create_index([("status", ASCENDING), ("created_at", ASCENDING)])
     errors_col.create_index([("at", DESCENDING)], expireAfterSeconds=30 * 24 * 3600)
 
-    # user_seq: continue from the highest existing user number
-    if not counters_col.find_one({"_id": "main"}):
-        top = users_col.find_one({"id": {"$exists": True}}, sort=[("id", DESCENDING)])
-        counters_col.update_one(
-            {"_id": "main"},
-            {"$setOnInsert": {"user_seq": int(top["id"]) if top else 0}},
-            upsert=True,
-        )
+    # user_seq: continue from the highest existing user number (and heal a non-numeric value)
+    cur = counters_col.find_one({"_id": "main"})
+    if cur is None or not _is_int(cur.get("user_seq")):
+        _repair_counter("user_seq")
     logging.info("DB initialized (videos collection untouched)")
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _repair_counter(field: str):
+    """Make counters.main[field] a real integer >= the highest existing user number.
+    Fixes values stored as strings ("123") or missing, which break $inc."""
+    doc = counters_col.find_one({"_id": "main"}) or {}
+    try:
+        base = int(float(str(doc.get(field, 0)).strip()))
+    except (TypeError, ValueError):
+        base = 0
+    top = 0
+    for u in users_col.find({"id": {"$exists": True}}, {"id": 1}):
+        try:
+            top = max(top, int(float(str(u["id"]).strip())))
+        except (TypeError, ValueError):
+            pass
+    counters_col.update_one({"_id": "main"}, {"$set": {field: max(base, top)}}, upsert=True)
+    logging.warning(f"counter '{field}' repaired -> {max(base, top)} (was {doc.get(field)!r})")
 
 
 def next_seq(field: str) -> int:
     from pymongo import ReturnDocument
-    doc = counters_col.find_one_and_update(
-        {"_id": "main"}, {"$inc": {field: 1}},
-        upsert=True, return_document=ReturnDocument.AFTER,
-    )
+    from pymongo.errors import OperationFailure
+
+    def _inc():
+        return counters_col.find_one_and_update(
+            {"_id": "main"}, {"$inc": {field: 1}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+    try:
+        doc = _inc()
+    except OperationFailure:          # e.g. "Cannot apply $inc to a value of non-numeric type"
+        _repair_counter(field)
+        doc = _inc()
     return int(doc[field])
